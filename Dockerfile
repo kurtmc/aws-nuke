@@ -3,7 +3,7 @@ FROM alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8
 RUN apk add --no-cache ca-certificates
 RUN adduser -D aws-nuke
 
-FROM ghcr.io/acorn-io/images-mirror/golang:1.21@sha256:856073656d1a517517792e6cdd2f7a5ef080d3ca2dff33e518c8412f140fdd2d AS build
+FROM golang:1.25 AS build
 COPY / /src
 WORKDIR /src
 ENV CGO_ENABLED=0
