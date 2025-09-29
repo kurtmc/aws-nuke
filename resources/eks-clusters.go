@@ -5,11 +5,15 @@ import (
 
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/eks"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/eks"
+	eksTypes "github.com/aws/aws-sdk-go-v2/service/eks/types"
+	"github.com/gotidy/ptr"
 
 	"github.com/ekristen/libnuke/pkg/registry"
 	"github.com/ekristen/libnuke/pkg/resource"
+	"github.com/ekristen/libnuke/pkg/settings"
+	libsettings "github.com/ekristen/libnuke/pkg/settings"
 	"github.com/ekristen/libnuke/pkg/types"
 
 	"github.com/ekristen/aws-nuke/v3/pkg/nuke"
@@ -23,54 +27,65 @@ func init() {
 		Scope:    nuke.Account,
 		Resource: &EKSCluster{},
 		Lister:   &EKSClusterLister{},
+		Settings: []string{
+			"DisableDeletionProtection",
+		},
 	})
 }
 
 type EKSClusterLister struct{}
 
-func (l *EKSClusterLister) List(_ context.Context, o interface{}) ([]resource.Resource, error) {
+func (l *EKSClusterLister) List(ctx context.Context, o interface{}) ([]resource.Resource, error) {
 	opts := o.(*nuke.ListerOpts)
-	svc := eks.New(opts.Session)
+	svc := eks.NewFromConfig(*opts.Config)
 	var resources []resource.Resource
 
 	params := &eks.ListClustersInput{
-		MaxResults: aws.Int64(100),
+		MaxResults: aws.Int32(100),
 	}
 
-	for {
-		resp, err := svc.ListClusters(params)
+	paginator := eks.NewListClustersPaginator(svc, params)
+
+	for paginator.HasMorePages() {
+		resp, err := paginator.NextPage(ctx)
 		if err != nil {
 			return nil, err
 		}
 
 		for _, cluster := range resp.Clusters {
-			dcResp, err := svc.DescribeCluster(&eks.DescribeClusterInput{Name: cluster})
+			dcResp, err := svc.DescribeCluster(ctx, &eks.DescribeClusterInput{Name: aws.String(cluster)})
 			if err != nil {
 				return nil, err
 			}
 			resources = append(resources, &EKSCluster{
 				svc:     svc,
-				name:    cluster,
+				name:    aws.String(cluster),
 				cluster: dcResp.Cluster,
 			})
 		}
-		if resp.NextToken == nil {
-			break
-		}
-
-		params.NextToken = resp.NextToken
 	}
 	return resources, nil
 }
 
 type EKSCluster struct {
-	svc     *eks.EKS
+	svc     *eks.Client
 	name    *string
-	cluster *eks.Cluster
+	cluster *eksTypes.Cluster
+
+	settings *libsettings.Setting
 }
 
-func (f *EKSCluster) Remove(_ context.Context) error {
-	_, err := f.svc.DeleteCluster(&eks.DeleteClusterInput{
+func (f *EKSCluster) Remove(ctx context.Context) error {
+	if ptr.ToBool(f.cluster.DeletionProtection) && f.settings.GetBool("DisableDeletionProtection") {
+		updateClusterConfigInput := &eks.UpdateClusterConfigInput{
+			Name:               f.name,
+			DeletionProtection: aws.Bool(false),
+		}
+		if _, err := f.svc.UpdateClusterConfig(ctx, updateClusterConfigInput); err != nil {
+			return err
+		}
+	}
+	_, err := f.svc.DeleteCluster(ctx, &eks.DeleteClusterInput{
 		Name: f.name,
 	})
 
@@ -88,4 +103,8 @@ func (f *EKSCluster) Properties() types.Properties {
 
 func (f *EKSCluster) String() string {
 	return *f.name
+}
+
+func (f *EKSCluster) Settings(setting *settings.Setting) {
+	f.settings = setting
 }
